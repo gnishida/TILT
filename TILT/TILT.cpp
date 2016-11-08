@@ -42,9 +42,6 @@ namespace tilt {
 		cv::Mat_<double> scale_matrix;
 		cv::pow(downsample_matrix, total_scale, scale_matrix);
 
-		cv::Vec3b hoge = args_input_image.at<cv::Vec3b>(0, 0);
-		std::cout << (int)hoge[0] << "," << (int)hoge[1] << "," << (int)hoge[2] << std::endl;
-
 		cv::Mat input_image;
 		if (blur) {
 			cv::GaussianBlur(args_input_image, input_image, cv::Size(std::ceil(blur_kernel_size_k * pow(2, total_scale)) + 1, std::ceil(blur_kernel_size_k * pow(2, total_scale)) + 1), std::ceil(blur_kernel_sigma_k * pow(2, total_scale)) + 1, std::ceil(blur_kernel_sigma_k * pow(2, total_scale)) + 1, cv::BORDER_CONSTANT);
@@ -59,9 +56,7 @@ namespace tilt {
 			cv::cvtColor(input_image, input_image, cv::COLOR_BGR2GRAY);
 		}
 
-		input_image.convertTo(input_image, CV_64FC3);
-		cv::Vec3d hoge2 = input_image.at<cv::Vec3d>(0, 0);
-		std::cout << hoge2[0] << "," << hoge2[1] << "," << hoge2[2] << std::endl;
+		input_image.convertTo(input_image, CV_64F);
 
 		initial_tfm_matrix = scale_matrix * initial_tfm_matrix * scale_matrix.inv();
 		cv::Point2d center = transform_point(args_center, scale_matrix);
