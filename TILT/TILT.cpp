@@ -6,6 +6,8 @@
 namespace tilt {
 
 	void tilt(cv::Mat args_input_image, cv::Mat& result_image) {
+		cv::Mat original_args_input_image = args_input_image.clone();
+
 		// default value
 		bool blur = true;
 		int blur_kernel_size_k = 2;
@@ -171,11 +173,24 @@ namespace tilt {
 		}
 
 		// transform the result back to the original image before incising and resizing
+		args_input_image = original_args_input_image.clone();
 		initial_tfm_matrix = pre_scale_matrix * initial_tfm_matrix * pre_scale_matrix.inv();
 		std::cout << pre_scale_matrix << std::endl;
 		std::cout << initial_tfm_matrix << std::endl;
 
-		imtransform_around_point(args_input_image, initial_tfm_matrix, cv::Point2d(args_input_image.cols * 0.5, args_input_image.rows * 0.5), result_image);
+		imtransform_around_point(args_input_image, initial_tfm_matrix.inv(), cv::Point2d(args_input_image.cols * 0.5, args_input_image.rows * 0.5), result_image);
+		/*
+		result_image = args_input_image.clone();
+		center = cv::Point2d(std::floor(args_input_image.cols / 2), std::floor(args_input_image.rows / 2));
+		cv::Point2d top_left = transform_point(cv::Point2d(-center.x, -center.y), initial_tfm_matrix) + center;
+		cv::Point2d top_right = transform_point(cv::Point2d(args_input_image.cols - 1 - center.x, -center.y), initial_tfm_matrix) + center;
+		cv::Point2d bottom_left = transform_point(cv::Point2d(-center.x, args_input_image.rows - 1 - center.y), initial_tfm_matrix) + center;
+		cv::Point2d bottom_right = transform_point(cv::Point2d(args_input_image.cols - 1 - center.x, args_input_image.rows - 1 - center.y), initial_tfm_matrix) + center;
+		cv::line(result_image, top_left, top_right, cv::Scalar(255, 0, 0), 3);
+		cv::line(result_image, top_right, bottom_right, cv::Scalar(255, 0, 0), 3);
+		cv::line(result_image, bottom_right, bottom_left, cv::Scalar(255, 0, 0), 3);
+		cv::line(result_image, bottom_left, top_left, cv::Scalar(255, 0, 0), 3);
+		*/
 	}
 
 	void tilt_kernel(cv::Mat input_image, cv::Point2d center, cv::Size focus_size, cv::Mat initial_tfm_matrix, double outer_tol, int outer_max_iter, double inner_tol, cv::Mat& Dotau, double& f, cv::Mat_<double>& tfm_matrix) {
@@ -219,12 +234,10 @@ namespace tilt {
 		Dotau = Dotau / A_scale;
 		
 		cv::Mat_<double> tau;
-		tfm2para(tfm_matrix, focus_size, tau);
+		tfm2para(tfm_matrix, focus_size, center, tau);
 
 		cv::Mat_<double> J, S;
-		jacobi(du, dv, focus_size, tau, J);
-		std::vector<cv::Mat> J_channels;
-		cv::split(J, J_channels);
+		jacobi(du, dv, focus_size, center, tau, J);
 		constraints(focus_size, tau, S);
 				
 		double pre_f = 0.0;
@@ -236,11 +249,11 @@ namespace tilt {
 			f = inner_IALM_constraints(Dotau, J, S, inner_tol, A, E, delta_tau);
 
 			// display information
-			std::cout << "outer_round " << outer_round + 1 << ", f=" << f << ", rank(A) =" << rank(A) << ", ||E||_1=" << cv::sum(cv::abs(E))[0] << std::endl;
+			std::cout << "outer_round " << outer_round + 1 << ", f=" << f << ", rank(A)=" << rank(A) << ", ||E||_1=" << cv::sum(cv::abs(E))[0] << std::endl;
 
 			// update Dotau
 			tau = tau + delta_tau;
-			para2tfm(tau, focus_size, tfm_matrix);
+			para2tfm(tau, focus_size, center, tfm_matrix);
 			imtransform_around_point(input_image, tfm_matrix.inv(), center, Dotau);
 
 			// judge convergence
@@ -258,7 +271,7 @@ namespace tilt {
 			dv = dv / cv::norm(Dotau) - cv::sum(tmp)[0] / pow(cv::norm(Dotau), 3) * Dotau;
 			double A_scale = cv::norm(Dotau);
 			Dotau = Dotau / A_scale;
-			jacobi(du, dv, focus_size, tau, J);
+			jacobi(du, dv, focus_size, center, tau, J);
 			constraints(focus_size, tau, S);
 		}
 
@@ -276,17 +289,15 @@ namespace tilt {
 	}
 
 	void imtransform_around_point(cv::Mat input_image, cv::Mat tfm_matrix, cv::Point2d point, cv::Mat& output_image) {
-		cv::Mat_<double> trans_matrix1 = (cv::Mat_<double>(3, 3) << 1, 0, -point.x, 0, 1, -point.y, 0, 0, 1);
-		cv::Mat_<double> trans_matrix2 = (cv::Mat_<double>(3, 3) << 1, 0, point.x, 0, 1, point.y, 0, 0, 1);
-
-		cv::warpPerspective(input_image, output_image, trans_matrix2 * tfm_matrix * trans_matrix1, cv::Size(input_image.cols, input_image.rows));
+		cv::Mat_<double> trans_matrix1 = (cv::Mat_<double>(3, 3) << 1, 0, 1-point.x, 0, 1, 1-point.y, 0, 0, 1);
+		cv::Mat_<double> trans_matrix2 = (cv::Mat_<double>(3, 3) << 1, 0, point.x-1, 0, 1, point.y-1, 0, 0, 1);
+		
+		cv::warpPerspective(input_image, output_image, trans_matrix2 * tfm_matrix * trans_matrix1, cv::Size(input_image.cols, input_image.rows), cv::INTER_LINEAR, cv::BORDER_CONSTANT);
 	}
 
-	void tfm2para(cv::Mat_<double> tfm_matrix, cv::Size focus_size, cv::Mat_<double>& tau) {
-		cv::Point2d center(focus_size.width * 0.5, focus_size.height * 0.5);
-		//cv::Point2d center(std::floor((focus_size.width - 1) * 0.5), std::floor((focus_size.height - 1) * 0.5));
-		cv::Mat_<double> pts = (cv::Mat_<double>(3, 4) << -center.x, focus_size.width - 1 - center.x, focus_size.width - 1 - center.x, -center.x,
-			-center.y, -center.y, focus_size.height - 1 - center.y, focus_size.height - 1 - center.y, 1, 1, 1, 1);
+	void tfm2para(cv::Mat_<double> tfm_matrix, cv::Size focus_size, cv::Point2d center, cv::Mat_<double>& tau) {
+		cv::Mat_<double> pts = (cv::Mat_<double>(3, 4) << 1 - center.x, focus_size.width - center.x, focus_size.width - center.x, 1 - center.x,
+			1 - center.y, 1 - center.y, focus_size.height - center.y, focus_size.height - center.y, 1, 1, 1, 1);
 		pts = tfm_matrix * pts;
 
 		// 変換パラメータτは、画像の矩形の4つの頂点の座標で表現できる
@@ -308,12 +319,9 @@ namespace tilt {
 	 * @param focus_size
 	 * @param tfm_matrix
 	 */
-	void para2tfm(cv::Mat_<double> tau, cv::Size focus_size, cv::Mat_<double>& tfm_matrix) {
-		cv::Point2d center(focus_size.width * 0.5, focus_size.height * 0.5);
-		//cv::Point2d center(std::floor((focus_size.width - 1) * 0.5), std::floor((focus_size.height - 1) * 0.5));
-
-		cv::Mat_<double> X = (cv::Mat_<double>(1, 4) << -center.x, focus_size.width - 1 - center.x, focus_size.width - 1 - center.x, -center.x);
-		cv::Mat_<double> Y = (cv::Mat_<double>(1, 4) << -center.y, -center.y, focus_size.height - 1 - center.y, focus_size.height - 1 - center.y);
+	void para2tfm(cv::Mat_<double> tau, cv::Size focus_size, cv::Point2d center, cv::Mat_<double>& tfm_matrix) {
+		cv::Mat_<double> X = (cv::Mat_<double>(1, 4) << 1 - center.x, focus_size.width - center.x, focus_size.width - center.x, 1 - center.x);
+		cv::Mat_<double> Y = (cv::Mat_<double>(1, 4) << 1 - center.y, 1 - center.y, focus_size.height - center.y, focus_size.height - center.y);
 
 		cv::Mat_<double> A = cv::Mat_<double>::zeros(8, 8);
 		cv::Mat_<double> b = cv::Mat_<double>::zeros(8, 1);
@@ -355,18 +363,15 @@ namespace tilt {
 		tfm_matrix(2, 2) = 1;
 	}
 
-	void jacobi(cv::Mat_<double> du, cv::Mat_<double> dv, cv::Size focus_size, cv::Mat_<double> tau, cv::Mat& J) {
-		cv::Point2d center(std::floor(focus_size.width * 0.5), std::floor(focus_size.height * 0.5));
-		//cv::Point2d center(std::floor((focus_size.width - 1) * 0.5), std::floor((focus_size.height - 1) * 0.5));
-
+	void jacobi(cv::Mat_<double> du, cv::Mat_<double> dv, cv::Size focus_size, cv::Point2d center, cv::Mat_<double> tau, cv::Mat& J) {
 		int m = du.rows;
 		int n = du.cols;
 
 		cv::Mat X0, Y0;
-		meshgrid(cv::Range(-center.x, focus_size.width - 1 - center.x), cv::Range(-center.y, focus_size.height - 1 - center.y), X0, Y0);
+		meshgrid(cv::Range(1 - center.x, focus_size.width - center.x), cv::Range(1 - center.y, focus_size.height - center.y), X0, Y0);
 
 		cv::Mat_<double> H;
-		para2tfm(tau, focus_size, H);
+		para2tfm(tau, focus_size, center, H);
 		cv::Mat_<double> N1 = H(0, 0)*X0 + H(0, 1)*Y0 + H(0, 2);
 		cv::Mat_<double> N2 = H(1, 0)*X0 + H(1, 1)*Y0 + H(1, 2);
 		cv::Mat_<double> N = H(2, 0)*X0 + H(2, 1)*Y0 + 1;
@@ -409,8 +414,8 @@ namespace tilt {
 		cv::merge(dIdH_channels, dIdH);
 
 		cv::Mat_<double> dPdH = cv::Mat_<double>::zeros(8, 8);
-		cv::Mat_<double> X = (cv::Mat_<double>(1, 4) << -center.x, focus_size.width - 1 - center.x, focus_size.width - 1 - center.x, -center.x);
-		cv::Mat_<double> Y = (cv::Mat_<double>(1, 4) << -center.y, -center.y, focus_size.height - 1 - center.y, focus_size.height - 1 - center.y);
+		cv::Mat_<double> X = (cv::Mat_<double>(1, 4) << 1 - center.x, focus_size.width - center.x, focus_size.width - center.x, 1 - center.x);
+		cv::Mat_<double> Y = (cv::Mat_<double>(1, 4) << 1 - center.y, 1 - center.y, focus_size.height - center.y, focus_size.height - center.y);
 		N1 = X * H(0, 0) + Y * H(0, 1) + H(0, 2);
 		N2 = X * H(1, 0) + Y * H(1, 1) + H(1, 2);
 		N = X * H(2, 0) + Y * H(2, 1) + 1;

@@ -14,11 +14,15 @@ int main() {
 
 
 
-	//cv::Mat img = cv::imread("../testdata/Facade_2_47385.png");
-	cv::Mat img = cv::imread("../testdata/test.png"); 
+	//cv::Mat img = cv::imread("../testdata/Facade_2_47385.png");	// soso
+	//cv::Mat img = cv::imread("../testdata/Facade_1_86634.png");	// good
+	//cv::Mat img = cv::imread("../testdata/Facade_4_47401.png");	// slow
+	cv::Mat img = cv::imread("../testdata/Facade_3_392888.png");	// soso
+	//cv::Mat img = cv::imread("../testdata/test.png"); 
 	cv::Mat result;
 	tilt::tilt(img, result);
 
+	cv::imwrite("result.png", result);
 	cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
 	cv::imshow("result", result);
 	cv::waitKey(0);
