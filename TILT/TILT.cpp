@@ -596,7 +596,7 @@ namespace tilt {
 		// Find non zero singular values.
 
 		// Use a small threshold to account for numeric errors
-		cv::Mat nonZeroSingularValues = w > 0.0001;
+		cv::Mat nonZeroSingularValues = w > 0.00001;
 
 		// Count the number of non zero
 		return cv::countNonZero(nonZeroSingularValues);
