@@ -17,5 +17,6 @@ namespace tilt {
 	void svd(cv::Mat A, cv::Mat& U, cv::Mat& S, cv::Mat& VT);
 	void mat_compare(cv::Mat src, double threshold, cv::Mat& dst, int cmpop);
 	int rank(cv::Mat mat);
+	double norm2(cv::Mat mat);
 }
 

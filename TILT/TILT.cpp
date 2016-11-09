@@ -441,7 +441,7 @@ namespace tilt {
 
 	double inner_IALM_constraints(cv::Mat Dotau, cv::Mat J, cv::Mat S_J, double inner_tol, cv::Mat& A, cv::Mat& E, cv::Mat& delta_tau) {
 		double c = 1.0;
-		double mu = 1.25 / cv::norm(Dotau);
+		double mu = 1.25 / norm2(Dotau);
 		int max_iter = 999999;
 		
 		// prepare data
@@ -470,7 +470,7 @@ namespace tilt {
 		double lambda = c / sqrt(m);
 
 		cv::Mat Y_1 = Dotau.clone();
-		double norm_two = cv::norm(Y_1);
+		double norm_two = norm2(Y_1);
 		double norm_inf = cv::norm(Y_1, cv::NORM_INF) / lambda;
 		double dual_norm = std::max(norm_two, norm_inf);
 		Y_1 = Y_1 / dual_norm;
@@ -484,7 +484,8 @@ namespace tilt {
 
 		// begin main loop
 		for (int inner_round = 0; inner_round < max_iter; ++inner_round) {
-			cv::Mat temp_0 = Dotau + ((cv::Mat)(Jo * delta_tau).t()).reshape(1, m) + Y_1 / mu;
+			cv::Mat temp_0 = Dotau + ((cv::Mat)(Jo * delta_tau).t()).reshape(1, n).t() + Y_1 / mu;
+
 			cv::Mat temp_1 = temp_0 - E;
 			cv::Mat S, U, VT;
 			svd(temp_1, U, S, VT);
@@ -513,8 +514,7 @@ namespace tilt {
 			temp_3.push_back((cv::Mat)(-Y_2 / mu));
 
 			delta_tau = pinv_J_vec * temp_3;
-			//std::cout << delta_tau << std::endl;
-			cv::Mat derivative_Y_1 = Dotau - A - E + ((cv::Mat)(Jo * delta_tau).t()).reshape(1, m);
+			cv::Mat derivative_Y_1 = Dotau - A - E + ((cv::Mat)(Jo * delta_tau).t()).reshape(1, n).t();
 			cv::Mat derivative_Y_2 = S_J * delta_tau;
 			Y_1 = Y_1 + derivative_Y_1 * mu;
 			Y_2 = Y_2 + derivative_Y_2 * mu;
@@ -529,7 +529,7 @@ namespace tilt {
 				return f;
 			}
 
-			double stop_criterion = sqrt(pow(cv::norm(derivative_Y_1), 2) + pow(cv::norm(derivative_Y_2), 2)) / d_norm;
+			double stop_criterion = sqrt(pow(cv::norm(derivative_Y_1), 2) + pow(norm2(derivative_Y_2), 2)) / d_norm;
 			//std::cout << cv::norm(derivative_Y_1) << ", " << cv::norm(derivative_Y_2) << ", " << stop_criterion << std::endl;
 			if (stop_criterion < inner_tol) {
 				return f;
@@ -600,6 +600,18 @@ namespace tilt {
 
 		// Count the number of non zero
 		return cv::countNonZero(nonZeroSingularValues);
+	}
+
+	/**
+	 * Compute the 2-norm, aka spectral norm of the matrix.
+	 */
+	double norm2(cv::Mat mat) {
+		cv::Mat eigenvalues;
+		cv::eigen(mat.t() * mat, eigenvalues);
+
+		double min_eigenvalue, max_eigenvalue;
+		cv::minMaxLoc(eigenvalues, &min_eigenvalue, &max_eigenvalue);
+		return sqrt(max_eigenvalue);
 	}
 
 }
