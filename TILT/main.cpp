@@ -12,13 +12,10 @@ int main() {
 	*/
 
 
-
-
-	//cv::Mat img = cv::imread("../testdata/Facade_2_47385.png");	// soso
-	//cv::Mat img = cv::imread("../testdata/Facade_1_86634.png");	// good
-	//cv::Mat img = cv::imread("../testdata/Facade_4_47401.png");	// slow
-	cv::Mat img = cv::imread("../testdata/Facade_3_392888.png");	// soso
-	//cv::Mat img = cv::imread("../testdata/test.png"); 
+	//cv::Mat img = cv::imread("../testdata/test.png");
+	//cv::Mat img = cv::imread("../testdata/Facade_3_2.png");
+	//cv::Mat img = cv::imread("../testdata/Facade_4_9.png");
+	cv::Mat img = cv::imread("../testdata/Facade_2_4.png");
 	cv::Mat result;
 	tilt::tilt(img, result);
 

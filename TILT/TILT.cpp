@@ -2,171 +2,192 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <iostream>
+#include <map>
 
 namespace tilt {
 
 	void tilt(cv::Mat args_input_image, cv::Mat& result_image) {
-		cv::Mat original_args_input_image = args_input_image.clone();
-
 		// default value
-		bool blur = true;
-		int blur_kernel_size_k = 2;
-		int blur_kernel_sigma_k = 2;
-		cv::Mat_<double> initial_tfm_matrix = cv::Mat_<double>::eye(3, 3);
-		int branch_accuracy = 5;
-		double branch_max_rotation = CV_PI / 6.0;
-		double branch_max_skew = 1.0;
-		bool pyramid = true;
-		int pyramid_max_level = 2;
-		double outer_tol = 1e-4;
-		double outer_tol_step = 10;
-		int outer_max_iter = 50;
-		double inter_tol = 1e-4;
+		cv::Mat_<double> args_initial_tfm_matrix = cv::Mat_<double>::eye(3, 3);
+		double args_outer_tol = 1e-4;
+		int args_outer_max_iter = 50;
+		double args_inner_tol = 1e-4;
+		double args_inner_c = 1;
+		bool args_blur = true;
+		bool args_pyramid = true;
+		bool args_branch = true;
+		double args_focus_threshold = 50;
+		double args_outer_tol_step = 10;
+		int args_blur_kernel_size_k = 2;
+		int args_blur_kernel_sigma_k = 2;
+		int args_pyramid_max_level = 2;
+		int args_branch_max_iter = 10;
+		int args_branch_accuracy = 5;
+		double args_branch_max_rotation = CV_PI / 6.0;
+		double args_branch_max_skew = 1.0;
+		cv::Size args_focus_size(args_input_image.cols, args_input_image.rows);
+		cv::Point2d args_center(std::floor((args_input_image.cols - 1) * 0.5), std::floor((args_input_image.rows - 1) * 0.5));
+
+		// back up
+		cv::Mat original_args_input_image = args_input_image.clone();
+		cv::Size original_args_focus_size = args_focus_size;
+		cv::Point2d original_args_center = args_center;
+		cv::Mat original_args_initial_tfm_matrix = args_initial_tfm_matrix;
+
+		// cut the image
 
 		// down-sample the image if the focus is too large
 		cv::Mat_<double> pre_scale_matrix = cv::Mat_<double>::eye(3, 3);
 		double focus_threshold = 200.0;
-		int min_length = std::min(args_input_image.rows, args_input_image.cols);
+		int min_length = std::min(original_args_focus_size.width, original_args_focus_size.height);
 		if (min_length > focus_threshold) {
 			double s = min_length / focus_threshold;
-			cv::Size dst_pt_size = cv::Size(args_input_image.cols / s, args_input_image.rows / s);
+			cv::Size dst_pt_size = cv::Size(std::round(args_input_image.cols / s), std::round(args_input_image.rows / s));
 			cv::resize(args_input_image, args_input_image, dst_pt_size);
 			pre_scale_matrix = (cv::Mat_<double>(3, 3) << s, 0, 0, 0, s, 0, 0, 0, 1);
 		}
 
-		cv::Point2d args_center(args_input_image.cols * 0.5, args_input_image.rows * 0.5);
-		cv::Size focus_size(args_input_image.cols, args_input_image.rows);
+		// adjust the parsed parameters
+		cv::Mat initial_tfm_matrix = args_initial_tfm_matrix;
+		initial_tfm_matrix = pre_scale_matrix.inv() * initial_tfm_matrix * pre_scale_matrix;
+		args_initial_tfm_matrix = initial_tfm_matrix;
+		args_focus_size = cv::Size(std::round(args_focus_size.width / pre_scale_matrix(0, 0)), std::round(args_focus_size.height / pre_scale_matrix(0, 0)));
+		args_center = args_center / pre_scale_matrix(0, 0);
+		
+		if (args_branch) {
+			// Branch-and-bound if set
+			// step 1: prepare data for the lowest resolution
+			int total_scale = std::floor(std::log2(std::min(args_focus_size.width, args_focus_size.height) / args_focus_threshold));
+			cv::Mat_<double> downsample_matrix = (cv::Mat_<double>(3, 3) << 0.5, 0, 0, 0, 0.5, 0, 0, 0, 1);
+			cv::Mat_<double> scale_matrix;
+			cv::pow(downsample_matrix, total_scale, scale_matrix);
 
-		// step 1: prepare data for the lowest resolution
-		focus_threshold = 50.0;
-		int total_scale = std::floor(std::log2(std::min(focus_size.width, focus_size.height) / focus_threshold));
-		cv::Mat_<double> downsample_matrix = (cv::Mat_<double>(3, 3) << 0.5, 0, 0, 0, 0.5, 0, 0, 0, 1);
-		cv::Mat_<double> scale_matrix;
-		cv::pow(downsample_matrix, total_scale, scale_matrix);
-
-		cv::Mat input_image;
-		if (blur) {
-			cv::GaussianBlur(args_input_image, input_image, cv::Size(std::ceil(blur_kernel_size_k * pow(2, total_scale)) + 1, std::ceil(blur_kernel_size_k * pow(2, total_scale)) + 1), std::ceil(blur_kernel_sigma_k * pow(2, total_scale)) + 1, std::ceil(blur_kernel_sigma_k * pow(2, total_scale)) + 1, cv::BORDER_CONSTANT);
-		}
-		else {
-			input_image = args_input_image.clone();
-		}
-
-		cv::warpPerspective(input_image, input_image, scale_matrix, cv::Size(focus_size.width * pow(0.5, total_scale), focus_size.height * pow(0.5, total_scale)));
-
-		if (input_image.channels() > 1) {
-			cv::cvtColor(input_image, input_image, cv::COLOR_BGR2GRAY);
-		}
-
-		input_image.convertTo(input_image, CV_64F);
-
-		initial_tfm_matrix = scale_matrix * initial_tfm_matrix * scale_matrix.inv();
-		cv::Point2d center = transform_point(args_center, scale_matrix);
-		center = cv::Point2d(std::floor(center.x), std::floor(center.y));
-
-		std::vector<std::vector<double>> f_branch(3, std::vector<double>(2 * branch_accuracy + 1, 0));
-		std::vector<std::vector<cv::Mat>> Dotau_branch(3, std::vector<cv::Mat>(2 * branch_accuracy + 1));
-		std::vector<std::vector<cv::Mat>> result_tfm_matrix(3, std::vector<cv::Mat>(2 * branch_accuracy + 1));
-
-		// step 2: design branch-and-bound method.
-		std::vector<std::vector<cv::Mat_<double>>> candidate_matrix(3, std::vector<cv::Mat_<double>>(2 * branch_accuracy + 1));
-		for (int i = 0; i < 2 * branch_accuracy + 1; ++i) {
-			candidate_matrix[0][i] = cv::Mat_<double>::eye(3, 3);
-			double theta = -branch_max_rotation + i * branch_max_rotation / branch_accuracy;
-			candidate_matrix[0][i](0, 0) = cos(theta);
-			candidate_matrix[0][i](0, 1) = -sin(theta);
-			candidate_matrix[0][i](1, 0) = sin(theta);
-			candidate_matrix[0][i](1, 1) = cos(theta);
-			//candidate_matrix[0][i] = trans_matrix2 * candidate_matrix[0][i] * trans_matrix1;
-			candidate_matrix[1][i] = cv::Mat_<double>::eye(3, 3);
-			candidate_matrix[1][i](0, 1) = -branch_max_skew + i * branch_max_skew / branch_accuracy;
-			//candidate_matrix[1][i] = trans_matrix2 * candidate_matrix[1][i] * trans_matrix1;
-			candidate_matrix[2][i] = cv::Mat_<double>::eye(3, 3);
-			candidate_matrix[2][i](1, 0) = -branch_max_skew + i * branch_max_skew / branch_accuracy;
-			//candidate_matrix[2][i] = trans_matrix2 * candidate_matrix[2][i] * trans_matrix1;
-		}
-
-		// step 3: begin branch-and-bound
-		int gap = 5;
-		int level = 3;
-		//cv::Mat_<double> trans_matrix1 = (cv::Mat_<double>(3, 3) << 1, 0, -center.x, 0, 1, -center.y, 0, 0, 1);
-		//cv::Mat_<double> trans_matrix2 = (cv::Mat_<double>(3, 3) << 1, 0, center.x, 0, 1, center.y, 0, 0, 1);
-		cv::Mat BLACK_MATRIX(input_image.rows * level + gap * (level - 1), input_image.cols * (2 * branch_accuracy + 1) + gap * 2 * branch_accuracy, CV_8U, cv::Scalar(0));
-		for (int i = 0; i < level; ++i) {
-			for (int j = 0; j < 2 * branch_accuracy + 1; ++j) {
-				//cv::Mat tfm_matrix = (candidate_matrix[i][j] * initial_tfm_matrix.inv()).inv();
-				cv::Mat tfm_matrix = candidate_matrix[i][j] * initial_tfm_matrix.inv();
-
-				//tfm_matrix = trans_matrix2 * tfm_matrix * trans_matrix1;
-
-				cv::Mat Dotau;
-				//cv::warpPerspective(input_image, Dotau, tfm_matrix, cv::Size(input_image.cols, input_image.rows));
-				imtransform_around_point(input_image, tfm_matrix, center, Dotau);
-
-				// copy the transformed image to BLACK_MATRIX
-				Dotau.copyTo(BLACK_MATRIX(cv::Rect((input_image.cols + gap) * j, (input_image.rows + gap) * i, input_image.cols, input_image.rows)));
-				//cv::Mat roi = BLACK_MATRIX(cv::Rect((input_image.cols + gap) * j, (input_image.rows + gap) * i, input_image.cols, input_image.rows));
-				//Dotau.copyTo(roi);
-
-				Dotau.convertTo(Dotau, CV_64F);
-				Dotau = Dotau / cv::norm(Dotau);
-				cv::Mat S, U, V;
-				cv::SVD::compute(Dotau, S, U, V);
-				double f = cv::sum(S)[0];
-
-				// copy the transformation data
-				f_branch[i][j] = f;
-				Dotau_branch[i][j] = Dotau;
-				result_tfm_matrix[i][j] = tfm_matrix.inv();
+			cv::Mat input_image;
+			if (args_blur) {
+				cv::GaussianBlur(args_input_image, input_image, cv::Size(std::ceil(args_blur_kernel_size_k * pow(2, total_scale)) + 1, std::ceil(args_blur_kernel_size_k * pow(2, total_scale)) + 1), std::ceil(args_blur_kernel_sigma_k * pow(2, total_scale)) + 1, std::ceil(args_blur_kernel_sigma_k * pow(2, total_scale)) + 1, cv::BORDER_CONSTANT);
+			}
+			else {
+				input_image = args_input_image.clone();
 			}
 
-			int index = std::distance(f_branch[i].begin(), std::min_element(f_branch[i].begin(), f_branch[i].end()));
-			initial_tfm_matrix = result_tfm_matrix[i][index];
+			cv::resize(input_image, input_image, cv::Size(), pow(0.5, total_scale), pow(0.5, total_scale), cv::INTER_CUBIC);
+			//cv::warpPerspective(input_image, input_image, scale_matrix, cv::Size(focus_size.width * pow(0.5, total_scale), focus_size.height * pow(0.5, total_scale)));
+
+			if (input_image.channels() > 1) {
+				cv::cvtColor(input_image, input_image, cv::COLOR_BGR2GRAY);
+			}
+
+			input_image.convertTo(input_image, CV_64F);
+
+			initial_tfm_matrix = scale_matrix * initial_tfm_matrix * scale_matrix.inv();
+			cv::Point2d center = transform_point(args_center, scale_matrix);
+			center = cv::Point2d(std::floor(center.x), std::floor(center.y));
+
+			std::vector<std::vector<double>> f_branch(3, std::vector<double>(2 * args_branch_accuracy + 1, 0));
+			std::vector<std::vector<cv::Mat>> Dotau_branch(3, std::vector<cv::Mat>(2 * args_branch_accuracy + 1));
+			std::vector<std::vector<cv::Mat>> result_tfm_matrix(3, std::vector<cv::Mat>(2 * args_branch_accuracy + 1));
+
+			// step 2: design branch-and-bound method.
+			std::vector<std::vector<cv::Mat_<double>>> candidate_matrix(3, std::vector<cv::Mat_<double>>(2 * args_branch_accuracy + 1));
+			for (int i = 0; i < 2 * args_branch_accuracy + 1; ++i) {
+				candidate_matrix[0][i] = cv::Mat_<double>::eye(3, 3);
+				double theta = -args_branch_max_rotation + i * args_branch_max_rotation / args_branch_accuracy;
+				candidate_matrix[0][i](0, 0) = cos(theta);
+				candidate_matrix[0][i](0, 1) = -sin(theta);
+				candidate_matrix[0][i](1, 0) = sin(theta);
+				candidate_matrix[0][i](1, 1) = cos(theta);
+				candidate_matrix[1][i] = cv::Mat_<double>::eye(3, 3);
+				candidate_matrix[1][i](0, 1) = -args_branch_max_skew + i * args_branch_max_skew / args_branch_accuracy;
+				candidate_matrix[2][i] = cv::Mat_<double>::eye(3, 3);
+				candidate_matrix[2][i](1, 0) = -args_branch_max_skew + i * args_branch_max_skew / args_branch_accuracy;
+			}
+
+			int level = 3;
+			int gap = 5;
+			cv::Mat BLACK_MATRIX(input_image.rows * level + gap * (level - 1), input_image.cols * (2 * args_branch_accuracy + 1) + gap * 2 * args_branch_accuracy, CV_8U, cv::Scalar(0));
+
+			// step 3: begin branch-and-bound
+			int normal_outer_max_iter = args_outer_max_iter;
+			args_outer_max_iter = 1;
+			for (int i = 0; i < level; ++i) {
+				for (int j = 0; j < 2 * args_branch_accuracy + 1; ++j) {
+					cv::Mat tfm_matrix = candidate_matrix[i][j] * initial_tfm_matrix.inv();
+
+					cv::Mat Dotau;
+					imtransform_around_point(input_image, tfm_matrix, center, Dotau);
+
+					// copy the transformed image to BLACK_MATRIX
+					Dotau.copyTo(BLACK_MATRIX(cv::Rect((input_image.cols + gap) * j, (input_image.rows + gap) * i, input_image.cols, input_image.rows)));
+
+					Dotau.convertTo(Dotau, CV_64F);
+					Dotau = Dotau / cv::norm(Dotau);
+					cv::Mat S, U, V;
+					cv::SVD::compute(Dotau, S, U, V);
+					double f = cv::sum(S)[0];
+
+					// copy the transformation data
+					f_branch[i][j] = f;
+					Dotau_branch[i][j] = Dotau;
+					result_tfm_matrix[i][j] = tfm_matrix.inv();
+				}
+
+				int index = std::distance(f_branch[i].begin(), std::min_element(f_branch[i].begin(), f_branch[i].end()));
+				initial_tfm_matrix = result_tfm_matrix[i][index];
+			}
+
+			// step 4: adapt initial_tfm_matrix to highest-resolution
+			initial_tfm_matrix = scale_matrix.inv() * initial_tfm_matrix * scale_matrix;
+
+			// step 5: show inter result if necessary
+			cv::namedWindow("98", cv::WINDOW_AUTOSIZE);
+			cv::imshow("98", BLACK_MATRIX);
+			cv::waitKey(0);
+			
+			args_outer_max_iter = normal_outer_max_iter;
 		}
 
-		// step 4: adapt initial_tfm_matrix to highest-resolution
-		initial_tfm_matrix = scale_matrix.inv() * initial_tfm_matrix * scale_matrix;
-
-		// step 5: show inter result if necessary
-		cv::namedWindow("98", cv::WINDOW_AUTOSIZE);
-		cv::imshow("98", BLACK_MATRIX);
-		cv::waitKey(0);
+		std::cout << initial_tfm_matrix << std::endl;
 
 		// Do pyramid if necessary
-		if (pyramid) {
+		if (args_pyramid) {
 			// define parameters
-			downsample_matrix = (cv::Mat_<double>(3, 3) << 0.5, 0, 0, 0, 0.5, 0, 0, 0, 1);
+			cv::Mat_<double> downsample_matrix = (cv::Mat_<double>(3, 3) << 0.5, 0, 0, 0, 0.5, 0, 0, 0, 1);
 			cv::Mat_<double> upsample_matrix = downsample_matrix.inv();
-			total_scale = std::ceil(std::max(std::log2(std::min(focus_size.width, focus_size.height) / focus_threshold), 0.0));
+			int total_scale = std::ceil(std::max(std::log2(std::min(args_focus_size.width, args_focus_size.height) / args_focus_threshold), 0.0));
 
-			for (int scale = total_scale; scale >= 0; --scale) {
-				if (total_scale - scale >= pyramid_max_level) break;
+			for (int scale = total_scale; scale > 0; --scale) {
+				// begin each level of the pyramid
+				if (total_scale - scale >= args_pyramid_max_level) break;
 
 				// blur if required
-				if (blur && scale > 0) {
-					cv::GaussianBlur(args_input_image, input_image, cv::Size(std::ceil(blur_kernel_size_k * pow(2, scale)) + 1, std::ceil(blur_kernel_size_k * pow(2, scale)) + 1), std::ceil(blur_kernel_sigma_k * pow(2, scale)) + 1, std::ceil(blur_kernel_sigma_k * pow(2, scale)) + 1, cv::BORDER_CONSTANT);
+				cv::Mat input_image;
+				if (args_blur && scale > 0) {
+					cv::GaussianBlur(args_input_image, input_image, cv::Size(std::ceil(args_blur_kernel_size_k * pow(2, scale)) + 1, std::ceil(args_blur_kernel_size_k * pow(2, scale)) + 1), std::ceil(args_blur_kernel_sigma_k * pow(2, scale)) + 1, std::ceil(args_blur_kernel_sigma_k * pow(2, scale)) + 1, cv::BORDER_CONSTANT);
 				}
 				else {
 					input_image = args_input_image.clone();
 				}
 
 				// prepare image and initial tfm_matrix
+				cv::Mat scale_matrix;
 				cv::pow(downsample_matrix, scale, scale_matrix);
 
-				cv::warpPerspective(input_image, input_image, scale_matrix, cv::Size(input_image.cols * pow(0.5, scale), input_image.rows * pow(0.5, scale)));
+				cv::resize(input_image, input_image, cv::Size(), pow(0.5, scale), pow(0.5, scale), cv::INTER_CUBIC);
+				//cv::warpPerspective(input_image, input_image, scale_matrix, cv::Size(input_image.cols * pow(0.5, scale), input_image.rows * pow(0.5, scale)));
 				cv::Mat_<double> tfm_matrix = scale_matrix * initial_tfm_matrix * scale_matrix.inv();
 				cv::Point2d center = transform_point(args_center, scale_matrix);
-				center = cv::Point2d(floor(center.x), floor(center.y));
-				focus_size = cv::Size(input_image.cols, input_image.rows);
+				center = cv::Point2d(std::floor(center.x), std::floor(center.y));
+				cv::Size focus_size = cv::Size(input_image.cols, input_image.rows);
+				//cv::Size focus_size = cv::Size(std::floor(args_focus_size.width / pow(2, scale)), std::floor(args_focus_size.height / pow(2, scale)));
 
 				cv::Mat Dotau;
 				double f;
 				cv::Mat updated_tfm_matrix;
-				tilt_kernel(input_image, center, focus_size, tfm_matrix, outer_tol, outer_max_iter, inter_tol, Dotau, f, tfm_matrix);
+				tilt_kernel(input_image, center, focus_size, tfm_matrix, args_outer_tol, args_outer_max_iter, args_inner_tol, Dotau, f, tfm_matrix);
 
 				// update tfm_matrix of the highest-resolution level
 				initial_tfm_matrix = scale_matrix.inv() * tfm_matrix * scale_matrix;
-				outer_tol = outer_tol * outer_tol_step;
+				args_outer_tol = args_outer_tol * args_outer_tol_step;
 			}
 
 			//cv::Mat tfm_matrix = initial_tfm_matrix;
@@ -174,8 +195,10 @@ namespace tilt {
 
 		// transform the result back to the original image before incising and resizing
 		args_input_image = original_args_input_image.clone();
-		initial_tfm_matrix = pre_scale_matrix * initial_tfm_matrix * pre_scale_matrix.inv();
-		std::cout << pre_scale_matrix << std::endl;
+		args_focus_size = original_args_focus_size;
+		args_center = original_args_center;
+
+		cv::Mat tfm_matrix = pre_scale_matrix * initial_tfm_matrix * pre_scale_matrix.inv();
 		std::cout << initial_tfm_matrix << std::endl;
 
 		imtransform_around_point(args_input_image, initial_tfm_matrix.inv(), cv::Point2d(args_input_image.cols * 0.5, args_input_image.rows * 0.5), result_image);
@@ -368,7 +391,7 @@ namespace tilt {
 		int n = du.cols;
 
 		cv::Mat X0, Y0;
-		meshgrid(cv::Range(1 - center.x, focus_size.width - center.x), cv::Range(1 - center.y, focus_size.height - center.y), X0, Y0);
+		meshgrid(cv::Range(-std::floor((focus_size.width - 1) / 2), std::floor(focus_size.width / 2)), cv::Range(-std::floor((focus_size.height - 1) / 2), std::floor(focus_size.height / 2)), X0, Y0);
 
 		cv::Mat_<double> H;
 		para2tfm(tau, focus_size, center, H);
@@ -490,16 +513,21 @@ namespace tilt {
 		// begin main loop
 		for (int inner_round = 0; inner_round < max_iter; ++inner_round) {
 			cv::Mat temp_0 = Dotau + ((cv::Mat)(Jo * delta_tau).t()).reshape(1, n).t() + Y_1 / mu;
-
+			
 			cv::Mat temp_1 = temp_0 - E;
-			cv::Mat S, U, VT;
-			svd(temp_1, U, S, VT);
+			cv::Mat W, U, VT;
+			cv::SVD::compute(temp_1, W, U, VT, cv::SVD::MODIFY_A);
+			cv::Mat S(W.rows, W.rows, CV_64F, cv::Scalar(0.0));
+			for (int r = 0; r < W.rows; ++r) {
+				S.at<double>(r, r) = W.at<double>(r, 0);
+			}
+			//svd(temp_1, U, S, VT, cv::SVD::NO_UV);
 
 			cv::Mat S_temp;
 			mat_compare(S, 1.0 / mu, S_temp, cv::CMP_GT);
 			cv::multiply(S_temp, S - 1.0 / mu, S_temp);
 			A = U * S_temp * VT;
-
+			
 			cv::Mat temp_2 = temp_0 - A;
 			
 			cv::Mat temp_2_temp;
@@ -519,6 +547,7 @@ namespace tilt {
 			temp_3.push_back((cv::Mat)(-Y_2 / mu));
 
 			delta_tau = pinv_J_vec * temp_3;
+
 			cv::Mat derivative_Y_1 = Dotau - A - E + ((cv::Mat)(Jo * delta_tau).t()).reshape(1, n).t();
 			cv::Mat derivative_Y_2 = S_J * delta_tau;
 			Y_1 = Y_1 + derivative_Y_1 * mu;
